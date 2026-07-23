@@ -1,0 +1,35 @@
+plugins {
+    id 'com.android.library'
+}
+
+android {
+    namespace 'com.adbustr.mediation.applovin'
+    compileSdk rootProject.ext.compileSdkVersion
+
+    defaultConfig {
+        minSdk rootProject.ext.minSdkVersion
+        targetSdk rootProject.ext.targetSdkVersion
+        buildConfigField 'String', 'ADAPTER_VERSION', "\"${rootProject.ext.adapterVersion}\""
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
+
+dependencies {
+    // The MAX SDK is always present in the host app — bundling a second copy
+    // would produce duplicate classes at merge time.
+    compileOnly "com.applovin:applovin-sdk:${rootProject.ext.appLovinSdkVersion}"
+
+    // MediationAdapterBase exposes androidx.lifecycle.Lifecycle in its signatures,
+    // so javac needs it on the classpath even though we never touch it.
+    compileOnly 'androidx.lifecycle:lifecycle-common:2.6.2'
+
+    api project(':adbustr-sdk')
+}

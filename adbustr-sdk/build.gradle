@@ -1,0 +1,31 @@
+plugins {
+    id 'com.android.library'
+}
+
+android {
+    namespace 'com.adbustr.sdk'
+    compileSdk rootProject.ext.compileSdkVersion
+
+    defaultConfig {
+        minSdk rootProject.ext.minSdkVersion
+        targetSdk rootProject.ext.targetSdkVersion
+        consumerProguardFiles 'consumer-rules.pro'
+        buildConfigField 'String', 'SDK_VERSION', "\"${rootProject.ext.sdkVersion}\""
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
+
+// Deliberately dependency-free: the SDK ships into publisher apps that already
+// carry their own OkHttp / Glide / AndroidX versions, and a transitive conflict
+// here would be their problem, not ours. Networking uses HttpURLConnection,
+// JSON uses org.json (framework), video uses VideoView (framework).
+dependencies {
+}
