@@ -66,6 +66,22 @@ public final class AdbustrAdActivity extends Activity implements FullscreenAd.Ho
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        if (ad != null) {
+            ad.onHostResumed();
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        if (ad != null) {
+            ad.onHostPaused();
+        }
+        super.onPause();
+    }
+
+    @Override
     public Activity getActivity() {
         return this;
     }

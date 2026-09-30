@@ -89,6 +89,9 @@ public final class OrdBadgeView extends LinearLayout {
 
     /** True when this fill legally requires the badge to be rendered. */
     public static boolean isRequired(AdResponse.Ord ord) {
-        return ord != null && !ord.marked;
+        // No erid means the creative isn't registered with the ОРД (e.g. foreign
+        // demand on non-RU traffic): a badge would only print an empty
+        // "Реклама · " over someone else's ad.
+        return ord != null && !ord.marked && ord.erid != null && !ord.erid.isEmpty();
     }
 }

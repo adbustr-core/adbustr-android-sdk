@@ -9,15 +9,18 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.TextView;
 
+import com.adbustr.sdk.AdError;
 import com.adbustr.sdk.core.AdResponse;
 import com.adbustr.sdk.core.CreativeCache;
 import com.adbustr.sdk.core.Threads;
+import com.adbustr.sdk.ui.HtmlCreativeView;
 import com.adbustr.sdk.ui.OrdBadgeView;
 import com.adbustr.sdk.ui.Ui;
 
 /**
- * A fullscreen image interstitial. The creative is downloaded at load time, so
- * {@code show()} renders instantly.
+ * A fullscreen interstitial: an image downloaded at load time (so
+ * {@code show()} renders instantly), or an HTML creative run in a WebView at
+ * show time.
  *
  * <p>The close button is withheld for {@link #CLOSE_DELAY_MILLIS} — long enough
  * to count as a real impression, short enough not to trip MAX's user-experience
@@ -34,14 +37,18 @@ public final class InterstitialAd extends FullscreenAd {
     }
 
     private final String clickUrl;
+    /** Set for markup creatives; {@link #creative} is null then. */
+    private final AdResponse.Html html;
 
     private Bitmap creative;
+    private HtmlCreativeView htmlView;
     private Runnable revealCloseTask;
     private boolean closeAllowed;
 
     private InterstitialAd(AdResponse response, Bitmap creative) {
         super(response);
-        this.clickUrl = response.image.clickUrl;
+        this.clickUrl = response.image == null ? "" : response.image.clickUrl;
+        this.html = response.html;
         this.creative = creative;
     }
 
@@ -52,6 +59,12 @@ public final class InterstitialAd extends FullscreenAd {
      */
     public static void fromResponse(Context context, final AdResponse response,
                                     final Factory factory) {
+        if (response.html != null) {
+            // Rendered at show time: running the markup now would fire the DSP's
+            // own impression pixels for an ad nobody has seen yet.
+            factory.onPrepared(new InterstitialAd(response, null));
+            return;
+        }
         if (response.image == null) {
             factory.onPrepared(null);
             return;
@@ -71,6 +84,9 @@ public final class InterstitialAd extends FullscreenAd {
 
     @Override
     protected boolean isReadyToRender() {
+        if (html != null) {
+            return true;
+        }
         return creative != null && !creative.isRecycled();
     }
 
@@ -81,16 +97,48 @@ public final class InterstitialAd extends FullscreenAd {
         FrameLayout root = new FrameLayout(context);
         root.setBackgroundColor(Color.BLACK);
 
-        ImageView creativeView = new ImageView(context);
-        creativeView.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        creativeView.setImageBitmap(creative);
-        creativeView.setContentDescription("Advertisement");
-        creativeView.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                handleClick(context, clickUrl);
+        View creativeView;
+        if (html != null) {
+            htmlView = HtmlCreativeView.create(context, html, true,
+                    HtmlCreativeView.Placement.INTERSTITIAL, new HtmlCreativeView.Listener() {
+                        @Override
+                        public void onClick(String url) {
+                            handleClick(context, url);
+                        }
+
+                        @Override
+                        public void onCloseRequested() {
+                            // mraid.close() obeys the same minimum on-screen time
+                            // as our own close button.
+                            if (closeAllowed) {
+                                host.closeAd();
+                            }
+                        }
+                    });
+            if (htmlView == null) {
+                reportShowFailed(AdError.DISPLAY_FAILED);
+                Threads.main(new Runnable() {
+                    @Override
+                    public void run() {
+                        host.closeAd();
+                    }
+                });
+                return root;
             }
-        });
+            creativeView = htmlView.getView();
+        } else {
+            ImageView imageView = new ImageView(context);
+            imageView.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            imageView.setImageBitmap(creative);
+            imageView.setContentDescription("Advertisement");
+            imageView.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    handleClick(context, clickUrl);
+                }
+            });
+            creativeView = imageView;
+        }
         root.addView(creativeView, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
 
@@ -132,6 +180,20 @@ public final class InterstitialAd extends FullscreenAd {
     }
 
     @Override
+    public void onHostResumed() {
+        if (htmlView != null) {
+            htmlView.setViewable(true);
+        }
+    }
+
+    @Override
+    public void onHostPaused() {
+        if (htmlView != null) {
+            htmlView.setViewable(false);
+        }
+    }
+
+    @Override
     public boolean isCloseAllowed() {
         // Back mirrors the close button: blocked until the button appears.
         return closeAllowed;
@@ -146,6 +208,10 @@ public final class InterstitialAd extends FullscreenAd {
         // Dropped, not recycled: the ImageView can still draw one frame during
         // the closing transition, and drawing a recycled bitmap crashes.
         creative = null;
+        if (htmlView != null) {
+            htmlView.destroy();
+            htmlView = null;
+        }
         super.onHostDestroyed();
     }
 }

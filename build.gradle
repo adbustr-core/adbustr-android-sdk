@@ -4,10 +4,10 @@ plugins {
 
 ext {
     // Bumped together with AdbustrSdk.VERSION.
-    sdkVersion = '0.1.0'
+    sdkVersion = '0.2.0'
     // Adapter version is "<sdk version>.<adapter revision>" — the convention MAX
     // expects, so a pure adapter fix doesn't look like an SDK release.
-    adapterVersion = '0.1.0.0'
+    adapterVersion = '0.2.0.0'
 
     compileSdkVersion = 34
     minSdkVersion = 21

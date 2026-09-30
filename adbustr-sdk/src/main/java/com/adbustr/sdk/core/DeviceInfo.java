@@ -61,6 +61,15 @@ public final class DeviceInfo {
         return new int[]{metrics.widthPixels, metrics.heightPixels};
     }
 
+    /**
+     * Pixels → density-independent pixels. OpenRTB slot sizes ({@code w}/{@code h})
+     * are in dp: a 320×50 banner must not go out as 960×150 on a 3x screen.
+     */
+    public static int pxToDp(int px) {
+        float density = Resources.getSystem().getDisplayMetrics().density;
+        return density <= 0 ? px : Math.round(px / density);
+    }
+
     private static void resolveAdvertisingIdOnce(Context context) {
         if (ifaResolved) {
             return;

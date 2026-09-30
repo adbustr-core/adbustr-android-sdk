@@ -7,3 +7,8 @@
 -keep class com.google.android.gms.ads.identifier.AdvertisingIdClient { *; }
 -keep class com.google.android.gms.ads.identifier.AdvertisingIdClient$Info { *; }
 -dontwarn com.google.android.gms.ads.identifier.**
+
+# MRAID bridge: called from creative JS by name — R8 must not strip or rename it.
+-keepclassmembers class com.adbustr.sdk.ui.HtmlCreativeView$Bridge {
+    @android.webkit.JavascriptInterface <methods>;
+}

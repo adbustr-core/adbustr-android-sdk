@@ -60,8 +60,28 @@ public final class Ui {
         if (url == null || url.trim().isEmpty()) {
             return false;
         }
+        String target = url.trim();
         try {
-            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url.trim()));
+            Intent intent;
+            if (target.startsWith("intent:")) {
+                // Store links from HTML creatives. Never let markup address a
+                // specific component — only a plain browsable VIEW.
+                intent = Intent.parseUri(target, Intent.URI_INTENT_SCHEME);
+                intent.addCategory(Intent.CATEGORY_BROWSABLE);
+                intent.setComponent(null);
+                intent.setSelector(null);
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                try {
+                    context.startActivity(intent);
+                    return true;
+                } catch (android.content.ActivityNotFoundException e) {
+                    // Target app not installed — the creative's own web fallback.
+                    String fallback = intent.getStringExtra("browser_fallback_url");
+                    return fallback != null && !fallback.startsWith("intent:")
+                            && openUrl(context, fallback);
+                }
+            }
+            intent = new Intent(Intent.ACTION_VIEW, Uri.parse(target));
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             context.startActivity(intent);
             return true;

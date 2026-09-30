@@ -124,6 +124,14 @@ public abstract class FullscreenAd {
         return true;
     }
 
+    /** The presenting Activity came to the foreground (also right after creation). */
+    public void onHostResumed() {
+    }
+
+    /** The presenting Activity left the foreground: app switched, screen off. */
+    public void onHostPaused() {
+    }
+
     /** Called when the presenting Activity goes away. Releases native resources. */
     public void onHostDestroyed() {
         AdRegistry.remove(adId);

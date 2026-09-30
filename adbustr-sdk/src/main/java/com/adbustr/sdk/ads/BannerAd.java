@@ -12,8 +12,10 @@ import android.widget.ImageView;
 import com.adbustr.sdk.BannerAdListener;
 import com.adbustr.sdk.core.AdResponse;
 import com.adbustr.sdk.core.CreativeCache;
+import com.adbustr.sdk.core.SdkLog;
 import com.adbustr.sdk.core.Threads;
 import com.adbustr.sdk.core.TrackingDispatcher;
+import com.adbustr.sdk.ui.HtmlCreativeView;
 import com.adbustr.sdk.ui.OrdBadgeView;
 import com.adbustr.sdk.ui.Ui;
 
@@ -36,8 +38,11 @@ public final class BannerAd {
     private final AdResponse.Ord ord;
     private final String clickUrl;
     private final long expiresAtMillis;
+    /** Set for markup creatives; {@link #creative} is null then. */
+    private final AdResponse.Html html;
 
     private Bitmap creative;
+    private HtmlCreativeView htmlView;
     private FrameLayout container;
     private BannerAdListener listener;
     private boolean impressionFired;
@@ -46,7 +51,8 @@ public final class BannerAd {
     private BannerAd(AdResponse response, Bitmap creative) {
         this.tracking = response.tracking;
         this.ord = response.ord;
-        this.clickUrl = response.image.clickUrl;
+        this.clickUrl = response.image == null ? "" : response.image.clickUrl;
+        this.html = response.html;
         this.creative = creative;
         this.expiresAtMillis = SystemClock.elapsedRealtime() + Math.max(0, response.ttl) * 1000L;
     }
@@ -59,6 +65,12 @@ public final class BannerAd {
      */
     public static void fromResponse(Context context, final AdResponse response,
                                     int maxWidthPx, int maxHeightPx, final Factory factory) {
+        if (response.html != null) {
+            // Nothing to prefetch: the markup is inline, and running it early
+            // would fire the DSP's own impression pixels before anyone sees it.
+            factory.onPrepared(new BannerAd(response, null));
+            return;
+        }
         if (response.image == null) {
             factory.onPrepared(null);
             return;
@@ -98,18 +110,11 @@ public final class BannerAd {
         container = new FrameLayout(context);
         container.setBackgroundColor(Color.TRANSPARENT);
 
-        ImageView creativeView = new ImageView(context);
-        creativeView.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        creativeView.setImageBitmap(creative);
-        creativeView.setContentDescription("Advertisement");
-        creativeView.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                onClicked(context);
-            }
-        });
-        container.addView(creativeView, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        View creativeView = html != null ? createHtmlView(context) : createImageView(context);
+        if (creativeView != null) {
+            container.addView(creativeView, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        }
 
         if (OrdBadgeView.isRequired(ord)) {
             FrameLayout.LayoutParams badgeParams = new FrameLayout.LayoutParams(
@@ -124,11 +129,18 @@ public final class BannerAd {
             @Override
             public void onViewAttachedToWindow(View v) {
                 fireImpressionOnce();
+                if (htmlView != null) {
+                    htmlView.setViewable(true);
+                }
             }
 
             @Override
             public void onViewDetachedFromWindow(View v) {
-                // Nothing: the impression is one-shot for the life of the ad.
+                // The impression is one-shot for the life of the ad; only the
+                // creative's MRAID viewability follows attachment.
+                if (htmlView != null) {
+                    htmlView.setViewable(false);
+                }
             }
         });
 
@@ -136,14 +148,54 @@ public final class BannerAd {
         // up (MAX adds it to its own container before returning to us).
         if (container.isAttachedToWindow()) {
             fireImpressionOnce();
+            if (htmlView != null) {
+                htmlView.setViewable(true);
+            }
         }
 
         return container;
     }
 
+    private View createImageView(final Context context) {
+        ImageView creativeView = new ImageView(context);
+        creativeView.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        creativeView.setImageBitmap(creative);
+        creativeView.setContentDescription("Advertisement");
+        creativeView.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                onClicked(context, clickUrl);
+            }
+        });
+        return creativeView;
+    }
+
+    private View createHtmlView(final Context context) {
+        htmlView = HtmlCreativeView.create(context, html, false,
+                HtmlCreativeView.Placement.INLINE, new HtmlCreativeView.Listener() {
+                    @Override
+                    public void onClick(String url) {
+                        onClicked(context, url);
+                    }
+
+                    @Override
+                    public void onCloseRequested() {
+                        // An inline banner has nothing to close into.
+                    }
+                });
+        if (htmlView == null) {
+            SdkLog.w("banner HTML creative not rendered");
+            return null;
+        }
+        return htmlView.getView();
+    }
+
     private void fireImpressionOnce() {
         if (impressionFired || destroyed) {
             return;
+        }
+        if (html != null && htmlView == null) {
+            return; // nothing was rendered, so nothing was seen
         }
         impressionFired = true;
         TrackingDispatcher.fireAll(tracking.impression, true);
@@ -157,8 +209,8 @@ public final class BannerAd {
         });
     }
 
-    private void onClicked(Context context) {
-        if (!Ui.openUrl(context, clickUrl)) {
+    private void onClicked(Context context, String url) {
+        if (destroyed || !Ui.openUrl(context, url)) {
             return;
         }
         TrackingDispatcher.fireAll(tracking.click, false);
@@ -177,6 +229,10 @@ public final class BannerAd {
             }
             container.removeAllViews();
             container = null;
+        }
+        if (htmlView != null) {
+            htmlView.destroy();
+            htmlView = null;
         }
         creative = null;
     }

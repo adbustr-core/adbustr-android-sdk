@@ -16,6 +16,7 @@ import com.adbustr.sdk.core.CreativeCache;
 import com.adbustr.sdk.core.SdkLog;
 import com.adbustr.sdk.core.Threads;
 import com.adbustr.sdk.core.TrackingDispatcher;
+import com.adbustr.sdk.ui.HtmlCreativeView;
 import com.adbustr.sdk.ui.OrdBadgeView;
 import com.adbustr.sdk.ui.Ui;
 
@@ -23,17 +24,31 @@ import java.io.File;
 import java.util.Locale;
 
 /**
- * A rewarded video ad. The mp4 is fetched to disk at load time so playback
- * starts without buffering.
+ * A rewarded ad in one of three kinds, whichever the auction returned:
+ * <ul>
+ *   <li><b>video</b> — VAST mp4, fetched to disk at load time so playback starts
+ *       without buffering;</li>
+ *   <li><b>display</b> — an HTML creative;</li>
+ *   <li><b>playable</b> — an MRAID HTML5 mini-game.</li>
+ * </ul>
  *
- * <p>Reward rule: the user earns it by reaching completion. Skipping before the
- * end fires the skip pixel and closes without a reward — the same semantics the
- * Unity SDK uses, so both integrations pay out identically.
+ * <p>Reward rule for video: the user earns it by reaching completion. Skipping
+ * before the end fires the skip pixel and closes without a reward — the same
+ * semantics the Unity SDK uses, so both integrations pay out identically.
+ *
+ * <p>Reward rule for display / playable: the creative must stay on screen for
+ * {@code reward_after} seconds (counted only while the app is in the
+ * foreground). Until then there is no way out — no close button, back is
+ * blocked, {@code mraid.close()} is ignored; after that the reward is granted
+ * and the close button appears.
  */
 public final class RewardedAd extends FullscreenAd {
 
     /** How often playback progress is sampled for quartile pixels. */
     private static final long PROGRESS_POLL_MILLIS = 250;
+
+    /** Display/playable fallback when the server sent no reward_after. */
+    private static final int DEFAULT_HTML_REWARD_SECONDS = 15;
 
     /** Result of preparing a rewarded ad. Delivered on the IO thread. */
     public interface Factory {
@@ -46,6 +61,12 @@ public final class RewardedAd extends FullscreenAd {
     private final int skipAfterSeconds;
 
     private File videoFile;
+
+    /** Set for display/playable creatives; video fields are unused then. */
+    private final AdResponse.Html html;
+    private HtmlCreativeView htmlView;
+    private Runnable countdownTask;
+    private int rewardSecondsLeft;
 
     private VideoView videoView;
     private TextView skipButton;
@@ -61,10 +82,14 @@ public final class RewardedAd extends FullscreenAd {
 
     private RewardedAd(AdResponse response, File videoFile) {
         super(response);
-        this.clickUrl = response.video.clickUrl;
-        this.declaredDurationSeconds = response.video.duration;
-        this.skipAfterSeconds = response.video.skipAfter;
+        this.html = response.video == null ? response.html : null;
+        this.clickUrl = response.video == null ? "" : response.video.clickUrl;
+        this.declaredDurationSeconds = response.video == null ? 0 : response.video.duration;
+        this.skipAfterSeconds = response.video == null ? 0 : response.video.skipAfter;
         this.videoFile = videoFile;
+        this.rewardSecondsLeft = html == null || html.rewardAfter <= 0
+                ? DEFAULT_HTML_REWARD_SECONDS
+                : html.rewardAfter;
     }
 
     /**
@@ -73,6 +98,12 @@ public final class RewardedAd extends FullscreenAd {
      */
     public static void fromResponse(Context context, final AdResponse response,
                                     final Factory factory) {
+        if (response.video == null && response.html != null) {
+            // Display / playable: the markup is inline and runs at show time,
+            // so the DSP's own impression pixels don't fire early.
+            factory.onPrepared(new RewardedAd(response, null));
+            return;
+        }
         if (response.video == null) {
             factory.onPrepared(null);
             return;
@@ -88,12 +119,18 @@ public final class RewardedAd extends FullscreenAd {
 
     @Override
     protected boolean isReadyToRender() {
+        if (html != null) {
+            return true;
+        }
         return videoFile != null && videoFile.exists() && videoFile.length() > 0;
     }
 
     @Override
     public View onCreateView(final Host host) {
         this.host = host;
+        if (html != null) {
+            return createHtmlView(host);
+        }
         final Context context = host.getActivity();
 
         FrameLayout root = new FrameLayout(context);
@@ -146,6 +183,144 @@ public final class RewardedAd extends FullscreenAd {
         startPlayback();
         return root;
     }
+
+    // ---- display / playable ----------------------------------------------
+
+    private View createHtmlView(final Host host) {
+        final Context context = host.getActivity();
+
+        FrameLayout root = new FrameLayout(context);
+        root.setBackgroundColor(Color.BLACK);
+
+        htmlView = HtmlCreativeView.create(context, html, true,
+                HtmlCreativeView.Placement.INTERSTITIAL, new HtmlCreativeView.Listener() {
+                    @Override
+                    public void onClick(String url) {
+                        handleClick(context, url);
+                    }
+
+                    @Override
+                    public void onCloseRequested() {
+                        // A playable's own "close" at the end of the game counts
+                        // only once the reward is earned; before that the user
+                        // would lose it, so we keep the ad up.
+                        if (skipAllowed) {
+                            closeHost();
+                        } else {
+                            SdkLog.d("mraid.close() before reward — ignored");
+                        }
+                    }
+                });
+        if (htmlView == null) {
+            reportShowFailed(AdError.DISPLAY_FAILED);
+            Threads.main(new Runnable() {
+                @Override
+                public void run() {
+                    closeHost();
+                }
+            });
+            return root;
+        }
+        root.addView(htmlView.getView(), new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
+        skipButton = Ui.overlayButton(context, rewardLabel(rewardSecondsLeft));
+        skipButton.setEnabled(false);
+        skipButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (skipAllowed) {
+                    closeHost();
+                }
+            }
+        });
+        int margin = Ui.dp(context, 12);
+        FrameLayout.LayoutParams buttonParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT);
+        buttonParams.gravity = Gravity.TOP | Gravity.END;
+        buttonParams.setMargins(margin, margin, margin, margin);
+        root.addView(skipButton, buttonParams);
+
+        if (OrdBadgeView.isRequired(ord)) {
+            FrameLayout.LayoutParams badgeParams = new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT);
+            badgeParams.gravity = Gravity.BOTTOM | Gravity.START;
+            badgeParams.setMargins(margin, margin, margin, margin);
+            root.addView(new OrdBadgeView(context, ord), badgeParams);
+        }
+
+        reportShown();
+        TrackingDispatcher.fireAll(tracking.start, false);
+        return root;
+    }
+
+    /** Ticks once a second while the app is in the foreground. */
+    private final class CountdownTask implements Runnable {
+
+        @Override
+        public void run() {
+            if (countdownTask != this || skipButton == null) {
+                return;
+            }
+            rewardSecondsLeft--;
+            if (rewardSecondsLeft > 0) {
+                skipButton.setText(rewardLabel(rewardSecondsLeft));
+                Threads.mainDelayed(this, 1000);
+                return;
+            }
+            countdownTask = null;
+            onRewardTimeReached();
+        }
+    }
+
+    private void onRewardTimeReached() {
+        completed = true;
+        skipAllowed = true;
+        TrackingDispatcher.fireAll(tracking.complete, true);
+        grantReward();
+        if (skipButton != null) {
+            skipButton.setText("✕");
+            skipButton.setEnabled(true);
+        }
+    }
+
+    private void startCountdown() {
+        if (completed || countdownTask != null) {
+            return;
+        }
+        countdownTask = new CountdownTask();
+        Threads.mainDelayed(countdownTask, 1000);
+    }
+
+    private void stopCountdown() {
+        if (countdownTask != null) {
+            Threads.cancelMain(countdownTask);
+            countdownTask = null;
+        }
+    }
+
+    private static String rewardLabel(int remainingSeconds) {
+        return String.format(Locale.getDefault(), "Награда через %d", remainingSeconds);
+    }
+
+    @Override
+    public void onHostResumed() {
+        if (htmlView != null) {
+            htmlView.setViewable(true);
+            startCountdown();
+        }
+    }
+
+    @Override
+    public void onHostPaused() {
+        if (htmlView != null) {
+            // The reward is for time actually on screen, not time in the background.
+            stopCountdown();
+            htmlView.setViewable(false);
+        }
+    }
+
+    // ---- video ------------------------------------------------------------
 
     private void startPlayback() {
         videoView.setVideoURI(Uri.fromFile(videoFile));
@@ -315,6 +490,11 @@ public final class RewardedAd extends FullscreenAd {
     @Override
     public void onHostDestroyed() {
         stopProgressPolling();
+        stopCountdown();
+        if (htmlView != null) {
+            htmlView.destroy();
+            htmlView = null;
+        }
         if (videoView != null) {
             try {
                 videoView.stopPlayback();

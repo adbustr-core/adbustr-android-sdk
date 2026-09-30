@@ -21,12 +21,14 @@ public final class AdResponse {
 
     public final Video video;
     public final Image image;
+    /** Raw HTML/JS creative (the DSP's adm), rendered in a WebView. */
+    public final Html html;
     public final NativeAssets nativeAssets;
     public final Tracking tracking;
     public final Ord ord;
 
     private AdResponse(String status, String requestId, String format, int ttl,
-                       Video video, Image image, NativeAssets nativeAssets,
+                       Video video, Image image, Html html, NativeAssets nativeAssets,
                        Tracking tracking, Ord ord) {
         this.status = status;
         this.requestId = requestId;
@@ -34,6 +36,7 @@ public final class AdResponse {
         this.ttl = ttl;
         this.video = video;
         this.image = image;
+        this.html = html;
         this.nativeAssets = nativeAssets;
         this.tracking = tracking;
         this.ord = ord;
@@ -65,6 +68,7 @@ public final class AdResponse {
                     root.optInt("ttl", 0),
                     Video.from(root.optJSONObject("video")),
                     Image.from(root.optJSONObject("image")),
+                    Html.from(root.optJSONObject("html")),
                     NativeAssets.from(root.optJSONObject("native")),
                     Tracking.from(root.optJSONObject("tracking")),
                     Ord.from(root.optJSONObject("ord")));
@@ -139,6 +143,53 @@ public final class AdResponse {
                     json.optInt("w", 0),
                     json.optInt("h", 0),
                     json.optString("click_url", ""));
+        }
+    }
+
+    /**
+     * A markup creative. The SDK must execute it as-is: DSP HTML carries its own
+     * impression pixels, verification scripts and JS click trackers, and
+     * extracting a bare image out of it loses all of them.
+     */
+    public static final class Html {
+
+        /** Base URL for protocol-relative and relative references in the markup. */
+        static final String DEFAULT_BASE_URL = "https://rtb.adbustr.com/";
+
+        public final String markup;
+        /** Creative size in CSS pixels (dp); 0 when the DSP did not declare it. */
+        public final int width;
+        public final int height;
+        public final String baseUrl;
+        /**
+         * Rewarded only: seconds the creative must be on screen before the
+         * reward is granted and the close control appears.
+         */
+        public final int rewardAfter;
+
+        private Html(String markup, int width, int height, String baseUrl, int rewardAfter) {
+            this.markup = markup;
+            this.width = width;
+            this.height = height;
+            this.baseUrl = baseUrl;
+            this.rewardAfter = rewardAfter;
+        }
+
+        static Html from(JSONObject json) {
+            if (json == null) {
+                return null;
+            }
+            String markup = json.optString("adm", "");
+            if (markup.trim().isEmpty()) {
+                return null;
+            }
+            String baseUrl = json.optString("base_url", "");
+            return new Html(
+                    markup,
+                    json.optInt("w", 0),
+                    json.optInt("h", 0),
+                    baseUrl.isEmpty() ? DEFAULT_BASE_URL : baseUrl,
+                    json.optInt("reward_after", 0));
         }
     }
 

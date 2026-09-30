@@ -9,6 +9,7 @@ import com.adbustr.sdk.AdFormat;
 import com.adbustr.sdk.AdbustrConfig;
 import com.adbustr.sdk.BuildConfig;
 
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -121,8 +122,13 @@ public final class AdClient {
         request.put("sid", config.getSiteId());
         request.put("zone", zone);
         request.put("format", format.getWireValue());
-        request.put("w", width > 0 ? width : screen[0]);
-        request.put("h", height > 0 ? height : screen[1]);
+        // Creative kinds this SDK can render beyond image/video/native. The server
+        // only sends raw HTML to clients that declare it — older SDKs and the
+        // Unity SDK have no WebView renderer.
+        request.put("caps", new JSONArray().put("html").put("mraid"));
+        // Slot size in dp (OpenRTB units); device.w/h keep the physical pixels.
+        request.put("w", DeviceInfo.pxToDp(width > 0 ? width : screen[0]));
+        request.put("h", DeviceInfo.pxToDp(height > 0 ? height : screen[1]));
         request.put("app", appBlock());
         request.put("device", DeviceInfo.collect(appContext));
         request.put("user", new JSONObject().put("uid", UserIdentity.getOrCreateUid(appContext)));
